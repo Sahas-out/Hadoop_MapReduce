@@ -1,0 +1,5 @@
+export JAVA_HOME=/home/sahas/PROJECTS/hadoop-demo/jdk1.8.0_481
+export HADOOP_HOME=/home/sahas/PROJECTS/hadoop-demo/hadoop-3.4.3
+export PATH=$JAVA_HOME/bin:$PATH
+export PATH=$PATH:/home/sahas/PROJECTS/hadoop-demo/hadoop-3.4.3/bin
+
