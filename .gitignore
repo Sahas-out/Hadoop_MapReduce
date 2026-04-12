@@ -36,3 +36,5 @@ use_java8_forSession.sh
 wiki
 final_output/
 intermediate_output/
+cooccurrence_output/
+stripe_output/
