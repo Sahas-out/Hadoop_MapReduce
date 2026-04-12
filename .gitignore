@@ -30,3 +30,9 @@ Wikipedia-50-ARTICLES/
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+.gitignore
+.vscode/
+use_java8_forSession.sh
+wiki
+final_output/
+intermediate_output/
