@@ -4,13 +4,21 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.MapWritable;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
@@ -20,29 +28,30 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.StringUtils;
 
 /**
- * TaskB: MapReduce program to construct co-occurrence matrix for top frequent
- * words.
- * Uses pairs approach to find co-occurring words within distance d.
- * Runs for d = {1, 2, 3, 4} and reports runtime for each.
+ * TaskD2: Stripe approach WITH LOCAL AGGREGATION at MAP-CLASS LEVEL
+ * Accumulates stripes in mapper's cleanup() method
+ * Reduces intermediate key-value pairs significantly
+ * Compares with TaskC for performance improvement
+ * Runs for d = {1, 2, 3, 4} and reports runtime
  */
-public class TaskB {
+public class TaskD2_StripeWithAggregation {
 
     /**
-     * CoOccurrenceMapper - Finds co-occurring word pairs within distance d
-     * Loads top frequent words from distributed cache
+     * StripeMapperWithAggregation - Stripe with in-mapper aggregation
+     * Accumulates stripes in a local map, emits in cleanup()
      */
-    public static class CoOccurrenceMapper extends Mapper<Object, Text, Text, IntWritable> {
+    public static class StripeMapperWithAggregation extends Mapper<Object, Text, Text, MapWritable> {
 
-        private final static IntWritable one = new IntWritable(1);
         private Set<String> frequentWords = new HashSet<String>();
         private int distance = 1;
+        // Local aggregation map - accumulates stripes within this mapper
+        private Map<String, Map<String, Integer>> localStripes = new HashMap<String, Map<String, Integer>>();
 
         @Override
         public void setup(Context context) throws IOException, InterruptedException {
             Configuration conf = context.getConfiguration();
             distance = conf.getInt("task.distance", 1);
 
-            // Load frequent words from distributed cache
             URI[] cacheFiles = context.getCacheFiles();
             if (cacheFiles != null) {
                 for (URI cacheFile : cacheFiles) {
@@ -56,10 +65,8 @@ public class TaskB {
                 BufferedReader reader = new BufferedReader(new FileReader(filePath));
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    // Parse output from TaskA: "rank. word\tcount"
                     String[] parts = line.split("\t");
                     if (parts.length > 0) {
-                        // Extract word from "rank. word" format
                         String wordPart = parts[0].trim();
                         String word = wordPart.replaceAll("^\\d+\\.\\s+", "").toLowerCase();
                         if (!word.isEmpty()) {
@@ -68,7 +75,6 @@ public class TaskB {
                     }
                 }
                 reader.close();
-                System.out.println("Loaded " + frequentWords.size() + " frequent words for distance d=" + distance);
             } catch (IOException ioe) {
                 System.err.println("Error reading frequent words file: " + StringUtils.stringifyException(ioe));
             }
@@ -77,74 +83,112 @@ public class TaskB {
         @Override
         public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
             String line = value.toString().toLowerCase();
-            // Tokenize: split on non-word characters (except apostrophes)
             String[] tokens = line.split("[^\\w']+");
 
-            // Filter tokens to keep only frequent words
-            java.util.List<String> frequentTokens = new java.util.ArrayList<String>();
+            List<String> frequentTokens = new ArrayList<String>();
             for (String token : tokens) {
                 if (!token.isEmpty() && frequentWords.contains(token)) {
                     frequentTokens.add(token);
                 }
             }
 
-            // Generate co-occurrence pairs within distance d
+            // Generate stripes and accumulate in local map
             for (int i = 0; i < frequentTokens.size(); i++) {
-                String word1 = frequentTokens.get(i);
-                // Look ahead within distance d
-                for (int j = i + 1; j <= Math.min(i + distance, frequentTokens.size() - 1); j++) {
-                    String word2 = frequentTokens.get(j);
-                    // Create ordered pair to avoid duplicates (word1 < word2 lexicographically)
-                    if (word1.compareTo(word2) < 0) {
-                        context.write(new Text(word1 + "\t" + word2), one);
-                    } else {
-                        context.write(new Text(word2 + "\t" + word1), one);
+                String currentWord = frequentTokens.get(i);
+
+                // Get or create stripe for this word
+                Map<String, Integer> stripe = localStripes.getOrDefault(currentWord, new HashMap<String, Integer>());
+
+                // Look both backwards and forwards within distance d
+                for (int j = Math.max(0, i - distance); j <= Math.min(frequentTokens.size() - 1,
+                        i + distance); j++) {
+                    if (i != j) {
+                        String coWord = frequentTokens.get(j);
+                        stripe.put(coWord, stripe.getOrDefault(coWord, 0) + 1);
                     }
+                }
+
+                localStripes.put(currentWord, stripe);
+            }
+        }
+
+        @Override
+        protected void cleanup(Context context) throws IOException, InterruptedException {
+            // Emit all accumulated stripes at once after processing all records
+            for (Map.Entry<String, Map<String, Integer>> entry : localStripes.entrySet()) {
+                String word = entry.getKey();
+                Map<String, Integer> stripe = entry.getValue();
+
+                if (!stripe.isEmpty()) {
+                    MapWritable stripeMap = new MapWritable();
+                    for (Map.Entry<String, Integer> stripeEntry : stripe.entrySet()) {
+                        stripeMap.put(new Text(stripeEntry.getKey()), new IntWritable(stripeEntry.getValue()));
+                    }
+                    context.write(new Text(word), stripeMap);
                 }
             }
         }
     }
 
     /**
-     * CoOccurrenceReducer - Aggregates co-occurrence counts
+     * StripeReducer - Merges stripes from all mappers
      */
-    public static class CoOccurrenceReducer extends Reducer<Text, IntWritable, Text, IntWritable> {
-        private IntWritable result = new IntWritable();
+    public static class StripeReducer extends Reducer<Text, MapWritable, Text, Text> {
 
         @Override
-        public void reduce(Text key, Iterable<IntWritable> values, Context context)
+        public void reduce(Text key, Iterable<MapWritable> values, Context context)
                 throws IOException, InterruptedException {
-            int sum = 0;
-            for (IntWritable val : values) {
-                sum += val.get();
+
+            Map<String, Integer> aggregatedStripe = new HashMap<String, Integer>();
+
+            for (MapWritable stripeMap : values) {
+                for (Writable keyWritable : stripeMap.keySet()) {
+                    Text coWord = (Text) keyWritable;
+                    IntWritable count = (IntWritable) stripeMap.get(coWord);
+                    aggregatedStripe.put(coWord.toString(),
+                            aggregatedStripe.getOrDefault(coWord.toString(), 0) + count.get());
+                }
             }
-            result.set(sum);
-            context.write(key, result);
+
+            if (!aggregatedStripe.isEmpty()) {
+                StringBuilder stripe = new StringBuilder();
+                boolean first = true;
+
+                List<String> sortedWords = new ArrayList<>(aggregatedStripe.keySet());
+                Collections.sort(sortedWords);
+
+                for (String coWord : sortedWords) {
+                    if (!first) {
+                        stripe.append(",");
+                    }
+                    stripe.append(coWord).append(":").append(aggregatedStripe.get(coWord));
+                    first = false;
+                }
+
+                context.write(key, new Text(stripe.toString()));
+            }
         }
     }
 
-    /**
-     * Runs MapReduce job for co-occurrence matrix with given distance
-     */
-    private static boolean runCoOccurrenceJob(String inputPath, String frequentWordsPath,
-            String outputPath, int distance) throws Exception {
+    private static boolean runStripeJob(String inputPath, String frequentWordsPath, String outputPath, int distance)
+            throws Exception {
         Configuration conf = new Configuration();
         conf.setInt("task.distance", distance);
 
-        Job job = Job.getInstance(conf, "co-occurrence-d" + distance);
-        job.setJarByClass(TaskB.class);
-        job.setMapperClass(CoOccurrenceMapper.class);
-        job.setReducerClass(CoOccurrenceReducer.class);
+        Job job = Job.getInstance(conf, "stripe-aggregation-d" + distance);
+        job.setJarByClass(TaskD2_StripeWithAggregation.class);
+        job.setMapperClass(StripeMapperWithAggregation.class);
+        job.setReducerClass(StripeReducer.class);
 
-        // Use CombineTextInputFormat for handling many small files
-        // job.setInputFormatClass(CombineTextInputFormat.class);
-        // CombineTextInputFormat.setMaxInputSplitSize(job, 134217728); // 128MB
+        job.setInputFormatClass(CombineTextInputFormat.class);
+        CombineTextInputFormat.setMaxInputSplitSize(job, 134217728);
 
-        // Add frequent words file to distributed cache
         job.addCacheFile(new Path(frequentWordsPath).toUri());
 
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(MapWritable.class);
         job.setOutputKeyClass(Text.class);
-        job.setOutputValueClass(IntWritable.class);
+        job.setOutputValueClass(Text.class);
 
         FileInputFormat.addInputPath(job, new Path(inputPath));
         FileOutputFormat.setOutputPath(job, new Path(outputPath));
@@ -154,10 +198,8 @@ public class TaskB {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 3) {
-            System.err.println("Usage: TaskB <input_path> <frequent_words_file> <output_base_path>");
-            System.err.println("  input_path: Path to original wiki documents");
-            System.err.println("  frequent_words_file: Output from TaskA (top 50 words)");
-            System.err.println("  output_base_path: Base path for outputs (d1, d2, d3, d4 subdirectories)");
+            System.err.println(
+                    "Usage: TaskD2_StripeWithAggregation <input_path> <frequent_words_file> <output_base_path>");
             System.exit(1);
         }
 
@@ -165,7 +207,6 @@ public class TaskB {
         String frequentWordsPath = args[1];
         String outputBasePath = args[2];
 
-        // Verify that frequent words file exists
         try {
             BufferedReader reader = new BufferedReader(new FileReader(frequentWordsPath));
             int lineCount = 0;
@@ -173,13 +214,13 @@ public class TaskB {
                 lineCount++;
             }
             reader.close();
-            System.out.println("\nLoaded frequent words file with " + lineCount + " entries\n");
+            System.out.println("\n========== STRIPE WITH IN-MAPPER AGGREGATION ==========");
+            System.out.println("Loaded frequent words file with " + lineCount + " entries\n");
         } catch (IOException e) {
             System.err.println("Error reading frequent words file: " + frequentWordsPath);
             System.exit(1);
         }
 
-        // Run jobs for each distance value
         int[] distances = { 1, 2, 3, 4 };
         long[] runtimes = new long[4];
 
@@ -188,11 +229,11 @@ public class TaskB {
             String outputPath = outputBasePath + "/d" + d;
 
             System.out.println("\n========================================");
-            System.out.println("Running co-occurrence analysis for d=" + d);
+            System.out.println("Stripe + In-Mapper Aggregation for d=" + d);
             System.out.println("========================================");
 
             long startTime = System.currentTimeMillis();
-            boolean success = runCoOccurrenceJob(inputPath, frequentWordsPath, outputPath, d);
+            boolean success = runStripeJob(inputPath, frequentWordsPath, outputPath, d);
             long endTime = System.currentTimeMillis();
 
             runtimes[i] = endTime - startTime;
@@ -205,9 +246,8 @@ public class TaskB {
             System.out.println("Job completed for d=" + d + " in " + runtimes[i] + " ms");
         }
 
-        // Print runtime summary
         System.out.println("\n========================================");
-        System.out.println("RUNTIME SUMMARY FOR CO-OCCURRENCE MATRIX");
+        System.out.println("RUNTIME SUMMARY - STRIPE + IN-MAPPER AGGREGATION");
         System.out.println("========================================");
         for (int i = 0; i < distances.length; i++) {
             int d = distances[i];
@@ -218,7 +258,7 @@ public class TaskB {
         }
         System.out.println("========================================");
 
-        System.out.println("\nTaskB completed successfully!");
+        System.out.println("\nTaskD2 completed successfully!");
         System.out.println("Results available in:");
         for (int d : distances) {
             System.out.println("  - d=" + d + ": " + outputBasePath + "/d" + d);
