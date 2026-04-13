@@ -1,11 +1,11 @@
 task=task3_stripes
 distances=[2]
 target_splits=12
-total_input_bytes=166222646
+total_input_bytes=166222647
 min_split_size_bytes=6925944
 max_split_size_bytes=13851888
 
 mode	d	runtime_ms	map_setup_ms	map_mapFunction_ms	map_cleanup_ms	reduce_setup_ms	reduce_reduceFunction_ms	reduce_cleanup_ms	output_path
-none	2	11188	4	5637	1	0	15	0	task3_2d/task3_stripes_none_d2
-function	2	8550	2	4391	0	0	14	0	task3_2d/task3_stripes_function_d2
-class	2	7469	1	3940	8	0	9	0	task3_2d/task3_stripes_class_d2
+none	2	11381	5	5586	1	0	20	0	N_task3_2d/task3_stripes_none_d2
+function	2	8552	2	4181	0	0	16	0	N_task3_2d/task3_stripes_function_d2
+class	2	7492	2	3863	53	0	10	0	N_task3_2d/task3_stripes_class_d2

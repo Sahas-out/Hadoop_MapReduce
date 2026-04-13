@@ -1,11 +1,11 @@
 task=task2_pairs
 distances=[4]
 target_splits=12
-total_input_bytes=166222646
+total_input_bytes=166222647
 min_split_size_bytes=6925944
 max_split_size_bytes=13851888
 
 mode	d	runtime_ms	map_setup_ms	map_mapFunction_ms	map_cleanup_ms	reduce_setup_ms	reduce_reduceFunction_ms	reduce_cleanup_ms	output_path
-none	4	10190	4	4319	1	1	316	0	task2_4d/task2_pairs_none_d4
-function	4	8543	2	4195	0	0	137	0	task2_4d/task2_pairs_function_d4
-class	4	8523	2	4115	9	0	58	0	task2_4d/task2_pairs_class_d4
+none	4	10523	5	4702	1	1	391	0	N_task2_4d/task2_pairs_none_d4
+function	4	8488	2	4388	0	0	144	0	N_task2_4d/task2_pairs_function_d4
+class	4	7473	2	4060	9	0	58	0	N_task2_4d/task2_pairs_class_d4

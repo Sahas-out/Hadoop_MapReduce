@@ -28,7 +28,7 @@ import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
-import org.apache.hadoop.mapreduce.lib.input.CombineTextInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.CombineFileInputFormat;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 
@@ -386,9 +386,9 @@ public class Task2PairsCooccurrence {
         job.setOutputKeyClass(Text.class);
         job.setOutputValueClass(IntWritable.class);
 
-        job.setInputFormatClass(CombineTextInputFormat.class);
-        CombineTextInputFormat.setMinInputSplitSize(job, minSplitSize);
-        CombineTextInputFormat.setMaxInputSplitSize(job, maxSplitSize);
+        job.setInputFormatClass(CombinedWholeFileInputFormat.class);
+        CombineFileInputFormat.setMinInputSplitSize(job, minSplitSize);
+        CombineFileInputFormat.setMaxInputSplitSize(job, maxSplitSize);
 
         FileInputFormat.addInputPath(job, inputPath);
         FileOutputFormat.setOutputPath(job, outputPath);
