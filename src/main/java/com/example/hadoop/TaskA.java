@@ -15,6 +15,7 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.CombineTextInputFormat;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.StringUtils;
@@ -215,6 +216,11 @@ public class TaskA {
         job1.setJarByClass(TaskA.class);
         job1.setMapperClass(TokenizerMapper.class);
         job1.setReducerClass(WordCountReducer.class);
+
+        // Use CombineTextInputFormat for handling many small files efficiently
+        job1.setInputFormatClass(CombineTextInputFormat.class);
+        CombineTextInputFormat.setMaxInputSplitSize(job1, 134217728); // 128MB -
+        // combines small files
 
         // Add stopwords file to distributed cache
         if (stopwordsFile != null) {

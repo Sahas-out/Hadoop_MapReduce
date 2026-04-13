@@ -20,16 +20,17 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.StringUtils;
 
 /**
- * TaskB: MapReduce program to construct co-occurrence matrix for top frequent
- * words.
- * Uses pairs approach to find co-occurring words within distance d.
- * Runs for d = {1, 2, 3, 4} and reports runtime for each.
+ * TaskD1: Pairs approach WITH LOCAL AGGREGATION at COMBINER LEVEL
+ * Uses explicit Combiner class (runs on map output) for local aggregation
+ * Reduces intermediate key-value pairs with combiner function
+ * Compares with TaskD1_PairsWithAggregation (in-mapper aggregation)
+ * Runs for d = {1, 2, 3, 4} and reports runtime
  */
-public class TaskB {
+public class TaskD1_PairsWithCombiner {
 
     /**
-     * CoOccurrenceMapper - Finds co-occurring word pairs within distance d
-     * Loads top frequent words from distributed cache
+     * CoOccurrenceMapper - Standard pairs mapper (no local aggregation)
+     * Emits individual pairs immediately
      */
     public static class CoOccurrenceMapper extends Mapper<Object, Text, Text, IntWritable> {
 
@@ -42,7 +43,6 @@ public class TaskB {
             Configuration conf = context.getConfiguration();
             distance = conf.getInt("task.distance", 1);
 
-            // Load frequent words from distributed cache
             URI[] cacheFiles = context.getCacheFiles();
             if (cacheFiles != null) {
                 for (URI cacheFile : cacheFiles) {
@@ -56,10 +56,8 @@ public class TaskB {
                 BufferedReader reader = new BufferedReader(new FileReader(filePath));
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    // Parse output from TaskA: "rank. word\tcount"
                     String[] parts = line.split("\t");
                     if (parts.length > 0) {
-                        // Extract word from "rank. word" format
                         String wordPart = parts[0].trim();
                         String word = wordPart.replaceAll("^\\d+\\.\\s+", "").toLowerCase();
                         if (!word.isEmpty()) {
@@ -68,7 +66,6 @@ public class TaskB {
                     }
                 }
                 reader.close();
-                System.out.println("Loaded " + frequentWords.size() + " frequent words for distance d=" + distance);
             } catch (IOException ioe) {
                 System.err.println("Error reading frequent words file: " + StringUtils.stringifyException(ioe));
             }
@@ -77,10 +74,8 @@ public class TaskB {
         @Override
         public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
             String line = value.toString().toLowerCase();
-            // Tokenize: split on non-word characters (except apostrophes)
             String[] tokens = line.split("[^\\w']+");
 
-            // Filter tokens to keep only frequent words
             java.util.List<String> frequentTokens = new java.util.ArrayList<String>();
             for (String token : tokens) {
                 if (!token.isEmpty() && frequentWords.contains(token)) {
@@ -88,13 +83,11 @@ public class TaskB {
                 }
             }
 
-            // Generate co-occurrence pairs within distance d
+            // Emit pairs immediately - combiner will aggregate
             for (int i = 0; i < frequentTokens.size(); i++) {
                 String word1 = frequentTokens.get(i);
-                // Look ahead within distance d
                 for (int j = i + 1; j <= Math.min(i + distance, frequentTokens.size() - 1); j++) {
                     String word2 = frequentTokens.get(j);
-                    // Create ordered pair to avoid duplicates (word1 < word2 lexicographically)
                     if (word1.compareTo(word2) < 0) {
                         context.write(new Text(word1 + "\t" + word2), one);
                     } else {
@@ -106,7 +99,26 @@ public class TaskB {
     }
 
     /**
-     * CoOccurrenceReducer - Aggregates co-occurrence counts
+     * PairsCombiner - Aggregates pairs at map-function level
+     * Runs on mapper output before sending to reducer
+     */
+    public static class PairsCombiner extends Reducer<Text, IntWritable, Text, IntWritable> {
+        private IntWritable result = new IntWritable();
+
+        @Override
+        public void reduce(Text key, Iterable<IntWritable> values, Context context)
+                throws IOException, InterruptedException {
+            int sum = 0;
+            for (IntWritable val : values) {
+                sum += val.get();
+            }
+            result.set(sum);
+            context.write(key, result);
+        }
+    }
+
+    /**
+     * CoOccurrenceReducer - Final aggregation
      */
     public static class CoOccurrenceReducer extends Reducer<Text, IntWritable, Text, IntWritable> {
         private IntWritable result = new IntWritable();
@@ -123,24 +135,20 @@ public class TaskB {
         }
     }
 
-    /**
-     * Runs MapReduce job for co-occurrence matrix with given distance
-     */
-    private static boolean runCoOccurrenceJob(String inputPath, String frequentWordsPath,
-            String outputPath, int distance) throws Exception {
+    private static boolean runCoOccurrenceJob(String inputPath, String frequentWordsPath, String outputPath,
+            int distance) throws Exception {
         Configuration conf = new Configuration();
         conf.setInt("task.distance", distance);
 
-        Job job = Job.getInstance(conf, "co-occurrence-d" + distance);
-        job.setJarByClass(TaskB.class);
+        Job job = Job.getInstance(conf, "pairs-combiner-d" + distance);
+        job.setJarByClass(TaskD1_PairsWithCombiner.class);
         job.setMapperClass(CoOccurrenceMapper.class);
+        job.setCombinerClass(PairsCombiner.class); // Enable combiner for local aggregation
         job.setReducerClass(CoOccurrenceReducer.class);
 
-        // Use CombineTextInputFormat for handling many small files
-        // job.setInputFormatClass(CombineTextInputFormat.class);
-        // CombineTextInputFormat.setMaxInputSplitSize(job, 134217728); // 128MB
+        job.setInputFormatClass(CombineTextInputFormat.class);
+        CombineTextInputFormat.setMaxInputSplitSize(job, 134217728);
 
-        // Add frequent words file to distributed cache
         job.addCacheFile(new Path(frequentWordsPath).toUri());
 
         job.setOutputKeyClass(Text.class);
@@ -154,10 +162,7 @@ public class TaskB {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 3) {
-            System.err.println("Usage: TaskB <input_path> <frequent_words_file> <output_base_path>");
-            System.err.println("  input_path: Path to original wiki documents");
-            System.err.println("  frequent_words_file: Output from TaskA (top 50 words)");
-            System.err.println("  output_base_path: Base path for outputs (d1, d2, d3, d4 subdirectories)");
+            System.err.println("Usage: TaskD1_PairsWithCombiner <input_path> <frequent_words_file> <output_base_path>");
             System.exit(1);
         }
 
@@ -165,7 +170,6 @@ public class TaskB {
         String frequentWordsPath = args[1];
         String outputBasePath = args[2];
 
-        // Verify that frequent words file exists
         try {
             BufferedReader reader = new BufferedReader(new FileReader(frequentWordsPath));
             int lineCount = 0;
@@ -173,13 +177,13 @@ public class TaskB {
                 lineCount++;
             }
             reader.close();
-            System.out.println("\nLoaded frequent words file with " + lineCount + " entries\n");
+            System.out.println("\n========== PAIRS WITH COMBINER AGGREGATION ==========");
+            System.out.println("Loaded frequent words file with " + lineCount + " entries\n");
         } catch (IOException e) {
             System.err.println("Error reading frequent words file: " + frequentWordsPath);
             System.exit(1);
         }
 
-        // Run jobs for each distance value
         int[] distances = { 1, 2, 3, 4 };
         long[] runtimes = new long[4];
 
@@ -188,7 +192,7 @@ public class TaskB {
             String outputPath = outputBasePath + "/d" + d;
 
             System.out.println("\n========================================");
-            System.out.println("Running co-occurrence analysis for d=" + d);
+            System.out.println("Pairs + Combiner Aggregation for d=" + d);
             System.out.println("========================================");
 
             long startTime = System.currentTimeMillis();
@@ -205,9 +209,8 @@ public class TaskB {
             System.out.println("Job completed for d=" + d + " in " + runtimes[i] + " ms");
         }
 
-        // Print runtime summary
         System.out.println("\n========================================");
-        System.out.println("RUNTIME SUMMARY FOR CO-OCCURRENCE MATRIX");
+        System.out.println("RUNTIME SUMMARY - PAIRS + COMBINER AGGREGATION");
         System.out.println("========================================");
         for (int i = 0; i < distances.length; i++) {
             int d = distances[i];
@@ -218,7 +221,7 @@ public class TaskB {
         }
         System.out.println("========================================");
 
-        System.out.println("\nTaskB completed successfully!");
+        System.out.println("\nTaskD1 (Combiner) completed successfully!");
         System.out.println("Results available in:");
         for (int d : distances) {
             System.out.println("  - d=" + d + ": " + outputBasePath + "/d" + d);
