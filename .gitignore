@@ -1,10 +1,12 @@
 # my files
+.project
 .env
 target/
 output/
 jdk1.8.0_481/
 hadoop-3.4.3/
 Wikipedia-50-ARTICLES/
+Wikipedia-EN-20120601_ARTICLES
 
 # Compiled class file
 *.class
