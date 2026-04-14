@@ -6,6 +6,7 @@
 - Java 8
 - Maven (pom.xml is already there in the repo)
 - Hadoop 3.4.3 
+- make sure JAVA_HOME, HADOOP_HOME env variables are configured  along with PATH having JAVA_HOME/bin and HADOOP_HOME/bin
 
 ### Build
 from root directory
